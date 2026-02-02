@@ -26,7 +26,7 @@ class QueryManager {
     if (infoController.pluginSearchStatus.containsKey(pluginName)) {
       infoController.pluginSearchStatus[pluginName] = 'pending';
     }
-    for (Plugin plugin in pluginsController.pluginList) {
+    for (Plugin plugin in pluginsController.getSearchablePlugins()) {
       if (plugin.name == pluginName) {
         plugin.queryBangumi(keyword, shouldRethrow: true).then((result) {
           if (_isCancelled) {
@@ -53,11 +53,11 @@ class QueryManager {
     _controller = StreamController();
     infoController.pluginSearchResponseList.clear();
 
-    for (Plugin plugin in pluginsController.pluginList) {
+    for (Plugin plugin in pluginsController.getSearchablePlugins()) {
       infoController.pluginSearchStatus[plugin.name] = 'pending';
     }
 
-    for (Plugin plugin in pluginsController.pluginList) {
+    for (Plugin plugin in pluginsController.getSearchablePlugins()) {
       if (_isCancelled) return;
 
       plugin.queryBangumi(keyword, shouldRethrow: true).then((result) {

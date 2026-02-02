@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:kazumi/modules/search/plugin_search_module.dart';
 import 'package:kazumi/modules/roads/road_module.dart';
@@ -28,6 +29,9 @@ class Plugin {
   String chapterRoads;
   String chapterResult;
   String referer;
+  bool isNodeSource;
+  String nodeServer;
+  String nodeApi;
 
   Plugin({
     required this.api,
@@ -49,6 +53,9 @@ class Plugin {
     required this.chapterRoads,
     required this.chapterResult,
     required this.referer,
+    this.isNodeSource = false,
+    this.nodeServer = '',
+    this.nodeApi = '',
   });
 
   factory Plugin.fromJson(Map<String, dynamic> json) {
@@ -71,7 +78,41 @@ class Plugin {
         searchResult: json['searchResult'],
         chapterRoads: json['chapterRoads'],
         chapterResult: json['chapterResult'],
-        referer: json['referer'] ?? '');
+        referer: json['referer'] ?? '',
+        isNodeSource: json['isNodeSource'] ?? false,
+        nodeServer: json['nodeServer'] ?? '',
+        nodeApi: json['nodeApi'] ?? '');
+  }
+
+  factory Plugin.fromNodeSource({
+    required String name,
+    required String nodeServer,
+    required String nodeApi,
+  }) {
+    return Plugin(
+      api: 'nodejs',
+      type: 'nodejs',
+      name: name,
+      version: 'nodejs',
+      muliSources: true,
+      useWebview: true,
+      useNativePlayer: true,
+      usePost: true,
+      useLegacyParser: false,
+      adBlocker: false,
+      userAgent: '',
+      baseUrl: '',
+      searchURL: '',
+      searchList: '',
+      searchName: '',
+      searchResult: '',
+      chapterRoads: '',
+      chapterResult: '',
+      referer: '',
+      isNodeSource: true,
+      nodeServer: nodeServer,
+      nodeApi: nodeApi,
+    );
   }
 
   factory Plugin.fromTemplate() {
@@ -118,11 +159,17 @@ class Plugin {
     data['chapterRoads'] = chapterRoads;
     data['chapterResult'] = chapterResult;
     data['referer'] = referer;
+    data['isNodeSource'] = isNodeSource;
+    data['nodeServer'] = nodeServer;
+    data['nodeApi'] = nodeApi;
     return data;
   }
 
   Future<PluginSearchResponse> queryBangumi(String keyword,
       {bool shouldRethrow = false}) async {
+    if (isNodeSource) {
+      return _queryNodeBangumi(keyword, shouldRethrow: shouldRethrow);
+    }
     String queryURL = searchURL.replaceAll('@keyword', keyword);
     dynamic resp;
     List<SearchItem> searchItems = [];
@@ -177,6 +224,9 @@ class Plugin {
   }
 
   Future<List<Road>> querychapterRoads(String url, {CancelToken? cancelToken}) async {
+    if (isNodeSource) {
+      return _queryNodeRoads(url, cancelToken: cancelToken);
+    }
     List<Road> roadList = [];
     // 预处理
     if (!url.contains('https')) {
@@ -221,6 +271,177 @@ class Plugin {
       });
     } catch (_) {}
     return roadList;
+  }
+
+  Future<NodePlayInfo?> queryNodePlay(String flag, String id,
+      {CancelToken? cancelToken}) async {
+    if (!isNodeSource) {
+      return null;
+    }
+    final url = _buildNodeUrl('/play');
+    if (url.isEmpty) {
+      return null;
+    }
+    try {
+      final resp = await Request().post(url,
+          data: {'flag': flag, 'id': id},
+          cancelToken: cancelToken,
+          shouldRethrow: true);
+      final map = _asJsonMap(resp.data);
+      if (map == null) {
+        return null;
+      }
+      return NodePlayInfo.fromMap(map);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<PluginSearchResponse> _queryNodeBangumi(String keyword,
+      {bool shouldRethrow = false}) async {
+    final url = _buildNodeUrl('/search');
+    List<SearchItem> searchItems = [];
+    if (url.isEmpty) {
+      return PluginSearchResponse(pluginName: name, data: searchItems);
+    }
+    try {
+      final resp = await Request().post(url,
+          data: {'wd': keyword, 'page': 1},
+          shouldRethrow: shouldRethrow);
+      final map = _asJsonMap(resp.data);
+      final list = map?['list'];
+      if (list is List) {
+        for (final item in list) {
+          if (item is Map) {
+            final itemName = item['vod_name']?.toString() ?? '';
+            final itemId = item['vod_id']?.toString() ?? '';
+            if (itemName.isEmpty || itemId.isEmpty) {
+              continue;
+            }
+            searchItems.add(SearchItem(name: itemName, src: itemId));
+          }
+        }
+      }
+    } catch (_) {}
+    return PluginSearchResponse(pluginName: name, data: searchItems);
+  }
+
+  Future<List<Road>> _queryNodeRoads(String id,
+      {CancelToken? cancelToken}) async {
+    final roadList = <Road>[];
+    final url = _buildNodeUrl('/detail');
+    if (url.isEmpty) {
+      return roadList;
+    }
+    try {
+      final resp = await Request().post(url,
+          data: {'id': id}, cancelToken: cancelToken);
+      final map = _asJsonMap(resp.data);
+      final list = map?['list'];
+      if (list is! List || list.isEmpty) {
+        return roadList;
+      }
+      final vod = list.first;
+      if (vod is! Map) {
+        return roadList;
+      }
+      final fromRaw = vod['vod_play_from']?.toString() ?? '';
+      final urlRaw = vod['vod_play_url']?.toString() ?? '';
+      if (fromRaw.isEmpty || urlRaw.isEmpty) {
+        return roadList;
+      }
+      final fromList = fromRaw.split(r'$$$');
+      final urlList = urlRaw.split(r'$$$');
+      final count =
+          fromList.length < urlList.length ? fromList.length : urlList.length;
+      int index = 1;
+      for (int i = 0; i < count; i++) {
+        final flag = fromList[i];
+        final episodes = urlList[i].split('#');
+        final data = <String>[];
+        final identifiers = <String>[];
+        int episodeIndex = 1;
+        for (final episode in episodes) {
+          final trimmed = episode.trim();
+          if (trimmed.isEmpty) {
+            continue;
+          }
+          final parts = trimmed.split(r'$');
+          if (parts.length < 2) {
+            continue;
+          }
+          final episodeName =
+              parts.first.trim().isEmpty ? '第$episodeIndex集' : parts.first.trim();
+          final episodeId = parts.sublist(1).join(r'$').trim();
+          if (episodeId.isEmpty) {
+            continue;
+          }
+          identifiers.add(episodeName);
+          data.add(NodeEpisodePayload(flag: flag, id: episodeId).encode());
+          episodeIndex++;
+        }
+        if (data.isNotEmpty) {
+          roadList.add(Road(
+            name: '播放列表$index',
+            data: data,
+            identifier: identifiers,
+          ));
+          index++;
+        }
+      }
+    } catch (_) {}
+    return roadList;
+  }
+
+  String _buildNodeUrl(String path) {
+    if (!isNodeSource) {
+      return '';
+    }
+    var server = nodeServer.trim();
+    if (server.isEmpty) {
+      return '';
+    }
+    if (!server.startsWith('http://') && !server.startsWith('https://')) {
+      server = 'http://$server';
+    }
+    if (server.endsWith('/')) {
+      server = server.substring(0, server.length - 1);
+    }
+    var api = nodeApi.trim();
+    if (api.isEmpty) {
+      return '';
+    }
+    if (!api.startsWith('/')) {
+      api = '/$api';
+    }
+    var suffix = path.trim();
+    if (!suffix.startsWith('/')) {
+      suffix = '/$suffix';
+    }
+    return '$server$api$suffix';
+  }
+
+  Map<String, dynamic>? _asJsonMap(dynamic data) {
+    if (data == null) {
+      return null;
+    }
+    if (data is Map<String, dynamic>) {
+      return data;
+    }
+    if (data is Map) {
+      return Map<String, dynamic>.from(data);
+    }
+    if (data is String) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
   }
 
   Future<String> testSearchRequest(String keyword,
@@ -280,5 +501,80 @@ class Plugin {
     PluginSearchResponse pluginSearchResponse =
     PluginSearchResponse(pluginName: name, data: searchItems);
     return pluginSearchResponse;
+  }
+}
+
+class NodeEpisodePayload {
+  final String flag;
+  final String id;
+
+  const NodeEpisodePayload({required this.flag, required this.id});
+
+  String encode() {
+    return jsonEncode({'flag': flag, 'id': id});
+  }
+
+  static NodeEpisodePayload? decode(String raw) {
+    if (raw.trim().isEmpty) {
+      return null;
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        final flag = decoded['flag']?.toString() ?? '';
+        final id = decoded['id']?.toString() ?? '';
+        if (flag.isEmpty || id.isEmpty) {
+          return null;
+        }
+        return NodeEpisodePayload(flag: flag, id: id);
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
+  }
+}
+
+class NodePlayInfo {
+  final int parse;
+  final dynamic url;
+  final Map<String, dynamic> header;
+
+  NodePlayInfo({
+    required this.parse,
+    required this.url,
+    required this.header,
+  });
+
+  factory NodePlayInfo.fromMap(Map<String, dynamic> map) {
+    final parseRaw = map['parse'];
+    final parse = parseRaw is int
+        ? parseRaw
+        : int.tryParse(parseRaw?.toString() ?? '') ?? 0;
+    final header = map['header'] is Map
+        ? Map<String, dynamic>.from(map['header'] as Map)
+        : <String, dynamic>{};
+    return NodePlayInfo(parse: parse, url: map['url'], header: header);
+  }
+
+  String? resolveUrl() {
+    if (url == null) {
+      return null;
+    }
+    if (url is String) {
+      return url as String;
+    }
+    if (url is List) {
+      final list = url as List;
+      if (list.length >= 2 && list[1] is String) {
+        return list[1] as String;
+      }
+      for (final item in list) {
+        if (item is String) {
+          return item;
+        }
+      }
+    }
+    return null;
   }
 }

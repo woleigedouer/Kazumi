@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'package:mobx/mobx.dart';
 import 'package:flutter/services.dart' show rootBundle, AssetManifest;
 import 'package:path_provider/path_provider.dart';
@@ -7,6 +8,8 @@ import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/plugins/plugin_validity_tracker.dart';
 import 'package:kazumi/plugins/plugin_install_time_tracker.dart';
 import 'package:kazumi/request/plugin.dart';
+import 'package:kazumi/request/request.dart';
+import 'package:kazumi/utils/storage.dart';
 import 'package:kazumi/modules/plugin/plugin_http_module.dart';
 import 'package:kazumi/utils/logger.dart';
 import 'package:kazumi/request/api.dart';
@@ -21,6 +24,8 @@ class PluginsController = _PluginsController with _$PluginsController;
 abstract class _PluginsController with Store {
   @observable
   ObservableList<Plugin> pluginList = ObservableList.of([]);
+
+  ObservableList<Plugin> nodePluginList = ObservableList.of([]);
 
   @observable
   ObservableList<PluginHTTPItem> pluginHTTPList = ObservableList.of([]);
@@ -49,6 +54,110 @@ abstract class _PluginsController with Store {
       await newPluginDirectory!.create(recursive: true);
     }
     await loadAllPlugins();
+    await refreshNodePlugins();
+  }
+
+  List<Plugin> getSearchablePlugins() {
+    if (nodePluginList.isEmpty) {
+      return List<Plugin>.from(pluginList);
+    }
+    return <Plugin>[...pluginList, ...nodePluginList];
+  }
+
+  int getSearchablePluginCount() {
+    return pluginList.length + nodePluginList.length;
+  }
+
+  Future<void> refreshNodePlugins({String? serverUrl}) async {
+    nodePluginList.clear();
+    if (!Platform.isWindows) {
+      return;
+    }
+    final rawUrl = (serverUrl ??
+            GStorage.setting.get(SettingBoxKey.nodeServerUrl, defaultValue: ''))
+        .toString()
+        .trim();
+    if (rawUrl.isEmpty) {
+      return;
+    }
+    final server = _normalizeNodeServerUrl(rawUrl);
+    try {
+      final resp = await Request().get(
+        '$server/config',
+        options: Options(
+          sendTimeout: const Duration(seconds: 2),
+          receiveTimeout: const Duration(seconds: 2),
+        ),
+        shouldRethrow: true,
+      );
+      final map = _asJsonMap(resp.data);
+      final video = map?['video'];
+      final sites = (video is Map) ? video['sites'] : null;
+      if (sites is! List) {
+        return;
+      }
+      final seenNames = <String>{};
+      for (final site in sites) {
+        if (site is! Map) {
+          continue;
+        }
+        final siteName = site['name']?.toString().trim() ?? '';
+        final siteApi = site['api']?.toString().trim() ?? '';
+        if (siteName.isEmpty || siteApi.isEmpty) {
+          continue;
+        }
+        final displayName = 'Node-$siteName';
+        if (seenNames.contains(displayName)) {
+          continue;
+        }
+        seenNames.add(displayName);
+        nodePluginList.add(Plugin.fromNodeSource(
+          name: displayName,
+          nodeServer: server,
+          nodeApi: siteApi,
+        ));
+      }
+      if (nodePluginList.isNotEmpty) {
+        KazumiLogger()
+            .i('Plugin: loaded Node sources ${nodePluginList.length}');
+      }
+    } catch (e) {
+      KazumiLogger().w('Plugin: load Node sources failed: ${e.toString()}');
+    }
+  }
+
+  String _normalizeNodeServerUrl(String url) {
+    var server = url.trim();
+    if (!server.startsWith('http://') && !server.startsWith('https://')) {
+      server = 'http://$server';
+    }
+    if (server.endsWith('/')) {
+      server = server.substring(0, server.length - 1);
+    }
+    return server;
+  }
+
+  Map<String, dynamic>? _asJsonMap(dynamic data) {
+    if (data == null) {
+      return null;
+    }
+    if (data is Map<String, dynamic>) {
+      return data;
+    }
+    if (data is Map) {
+      return Map<String, dynamic>.from(data);
+    }
+    if (data is String) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is Map) {
+          return Map<String, dynamic>.from(decoded);
+        }
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
   }
 
   // Loads all plugins from the directory, populates the plugin list, and saves to plugins.json if needed

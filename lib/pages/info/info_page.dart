@@ -133,8 +133,8 @@ class _InfoPageState extends State<InfoPage> with TickerProviderStateMixin {
         infoController.bangumiItem.votesCount.isEmpty) {
       queryBangumiInfoByID(infoController.bangumiItem.id, type: 'attach');
     }
-    sourceTabController =
-        TabController(length: pluginsController.pluginList.length, vsync: this);
+    sourceTabController = TabController(
+        length: pluginsController.getSearchablePluginCount(), vsync: this);
     infoTabController = TabController(length: 5, vsync: this);
     showRating = GStorage.setting.get(SettingBoxKey.showRating, defaultValue: true);
     infoTabController.addListener(() {

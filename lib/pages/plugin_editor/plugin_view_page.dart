@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_mobx/flutter_mobx.dart';
@@ -8,6 +9,7 @@ import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/plugins/plugins_controller.dart';
 import 'package:kazumi/bean/appbar/sys_app_bar.dart';
+import 'package:kazumi/utils/storage.dart';
 
 class PluginViewPage extends StatefulWidget {
   const PluginViewPage({super.key});
@@ -18,6 +20,7 @@ class PluginViewPage extends StatefulWidget {
 
 class _PluginViewPageState extends State<PluginViewPage> {
   final PluginsController pluginsController = Modular.get<PluginsController>();
+  final setting = GStorage.setting;
 
   // 是否处于多选模式
   bool isMultiSelectMode = false;
@@ -119,6 +122,60 @@ class _PluginViewPageState extends State<PluginViewPage> {
     });
   }
 
+  void _showNodeSourceDialog() {
+    if (!Platform.isWindows) {
+      KazumiDialog.showToast(message: '当前平台暂不支持外置 Node 源');
+      return;
+    }
+    final TextEditingController textController = TextEditingController(
+      text: setting.get(SettingBoxKey.nodeServerUrl,
+          defaultValue: 'http://127.0.0.1:2333'),
+    );
+    KazumiDialog.show(builder: (context) {
+      return AlertDialog(
+        title: const Text('Node 源设置'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('外部 Node 服务地址（示例：http://127.0.0.1:2333）'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: textController,
+              decoration: const InputDecoration(
+                border: OutlineInputBorder(),
+                hintText: 'http://127.0.0.1:2333',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => KazumiDialog.dismiss(),
+            child: Text(
+              '取消',
+              style: TextStyle(color: Theme.of(context).colorScheme.outline),
+            ),
+          ),
+          TextButton(
+            onPressed: () async {
+              final value = textController.text.trim();
+              await setting.put(SettingBoxKey.nodeServerUrl, value);
+              await pluginsController.refreshNodePlugins(serverUrl: value);
+              KazumiDialog.dismiss();
+              if (value.isEmpty) {
+                KazumiDialog.showToast(message: '已清空 Node 源地址');
+              } else {
+                KazumiDialog.showToast(message: 'Node 源已刷新，重新打开详情页生效');
+              }
+            },
+            child: const Text('保存并刷新'),
+          ),
+        ],
+      );
+    });
+  }
+
   void onBackPressed(BuildContext context) {
     if (KazumiDialog.observer.hasKazumiDialog) {
       KazumiDialog.dismiss();
@@ -203,6 +260,14 @@ class _PluginViewPageState extends State<PluginViewPage> {
                 icon: const Icon(Icons.delete),
               ),
             ] else ...[
+              if (Platform.isWindows)
+                IconButton(
+                  onPressed: () {
+                    _showNodeSourceDialog();
+                  },
+                  tooltip: 'Node 源设置',
+                  icon: const Icon(Icons.hub_rounded),
+                ),
               IconButton(
                 onPressed: () {
                   _handleUpdate();

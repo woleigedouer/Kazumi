@@ -181,6 +181,7 @@ class _SourceSheetState extends State<SourceSheet>
 
   @override
   Widget build(BuildContext context) {
+    final pluginList = pluginsController.getSearchablePlugins();
     return DefaultTabController(
       length: 3,
       child: Scaffold(
@@ -194,7 +195,7 @@ class _SourceSheetState extends State<SourceSheet>
                     tabAlignment: TabAlignment.center,
                     dividerHeight: 0,
                     controller: widget.tabController,
-                    tabs: pluginsController.pluginList
+                    tabs: pluginList
                         .map(
                           (plugin) => Observer(
                             builder: (context) {
@@ -263,9 +264,17 @@ class _SourceSheetState extends State<SourceSheet>
                 IconButton(
                   onPressed: () {
                     int currentIndex = widget.tabController.index;
+                    if (currentIndex >= pluginList.length) {
+                      return;
+                    }
+                    final currentPlugin = pluginList[currentIndex];
+                    if (currentPlugin.isNodeSource ||
+                        currentPlugin.searchURL.isEmpty) {
+                      KazumiDialog.showToast(message: '该来源不支持网页打开');
+                      return;
+                    }
                     launchUrl(
-                      Uri.parse(pluginsController
-                          .pluginList[currentIndex].searchURL
+                      Uri.parse(currentPlugin.searchURL
                           .replaceFirst('@keyword', keyword)),
                       mode: LaunchMode.externalApplication,
                     );
@@ -280,9 +289,9 @@ class _SourceSheetState extends State<SourceSheet>
               child: Observer(
                 builder: (context) => TabBarView(
                   controller: widget.tabController,
-                  children: List.generate(pluginsController.pluginList.length,
+                  children: List.generate(pluginList.length,
                       (pluginIndex) {
-                    var plugin = pluginsController.pluginList[pluginIndex];
+                    var plugin = pluginList[pluginIndex];
                     var cardList = <Widget>[];
                     for (var searchResponse
                         in widget.infoController.pluginSearchResponseList) {

@@ -77,6 +77,49 @@ abstract class _VideoPageController with Store {
     String chapterName = roadList[currentRoad].identifier[episode - 1];
     KazumiLogger().i('VideoPageController: changed to $chapterName');
     String urlItem = roadList[currentRoad].data[episode - 1];
+    if (currentPlugin.isNodeSource) {
+      final payload = NodeEpisodePayload.decode(urlItem);
+      if (payload == null) {
+        KazumiLogger()
+            .w('VideoPageController: invalid node episode payload');
+        return;
+      }
+      final playInfo =
+          await currentPlugin.queryNodePlay(payload.flag, payload.id);
+      if (playInfo == null) {
+        KazumiLogger()
+            .w('VideoPageController: node play info is empty');
+        return;
+      }
+      final playUrl = playInfo.resolveUrl();
+      if (playUrl == null || playUrl.isEmpty) {
+        KazumiLogger()
+            .w('VideoPageController: node play url is empty');
+        return;
+      }
+      if (playInfo.header.isNotEmpty) {
+        final header = playInfo.header;
+        final ua = header['User-Agent'] ?? header['user-agent'];
+        if (ua != null && ua.toString().trim().isNotEmpty) {
+          currentPlugin.userAgent = ua.toString();
+        }
+        final referer = header['Referer'] ?? header['referer'];
+        if (referer != null && referer.toString().trim().isNotEmpty) {
+          currentPlugin.referer = referer.toString();
+        }
+      }
+      final webviewItemController = Modular.get<WebviewItemController>();
+      if (playInfo.parse == 0) {
+        webviewItemController.videoLoadingEventController.add(false);
+        webviewItemController.videoParserEventController
+            .add((playUrl, offset));
+      } else {
+        await webviewItemController.loadUrl(
+            playUrl, currentPlugin.useNativePlayer, currentPlugin.useLegacyParser,
+            offset: offset);
+      }
+      return;
+    }
     if (urlItem.contains(currentPlugin.baseUrl) ||
         urlItem.contains(currentPlugin.baseUrl.replaceAll('https', 'http'))) {
       urlItem = urlItem;
@@ -121,7 +164,7 @@ abstract class _VideoPageController with Store {
     final PluginsController pluginsController =
         Modular.get<PluginsController>();
     roadList.clear();
-    for (Plugin plugin in pluginsController.pluginList) {
+    for (Plugin plugin in pluginsController.getSearchablePlugins()) {
       if (plugin.name == pluginName) {
         roadList.addAll(
             await plugin.querychapterRoads(url, cancelToken: cancelToken));
