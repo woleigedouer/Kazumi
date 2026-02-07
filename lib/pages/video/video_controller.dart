@@ -64,6 +64,7 @@ abstract class _VideoPageController with Store {
 
   late Plugin currentPlugin;
 
+  Map<String, String> currentPlayHttpHeaders = {};
   /// 用于取消正在进行的 queryRoads 操作
   CancelToken? _queryRoadsCancelToken;
 
@@ -77,6 +78,7 @@ abstract class _VideoPageController with Store {
     String chapterName = roadList[currentRoad].identifier[episode - 1];
     KazumiLogger().i('VideoPageController: changed to $chapterName');
     String urlItem = roadList[currentRoad].data[episode - 1];
+    currentPlayHttpHeaders = {};
     if (currentPlugin.isNodeSource) {
       final payload = NodeEpisodePayload.decode(urlItem);
       if (payload == null) {
@@ -97,15 +99,27 @@ abstract class _VideoPageController with Store {
             .w('VideoPageController: node play url is empty');
         return;
       }
+      currentPlugin.userAgent = '';
+      currentPlugin.referer = '';
       if (playInfo.header.isNotEmpty) {
-        final header = playInfo.header;
-        final ua = header['User-Agent'] ?? header['user-agent'];
-        if (ua != null && ua.toString().trim().isNotEmpty) {
-          currentPlugin.userAgent = ua.toString();
+        final normalizedHeaders = <String, String>{};
+        playInfo.header.forEach((key, value) {
+          final headerKey = key.toString().trim().toLowerCase();
+          if (headerKey.isEmpty) return;
+          if (value == null) return;
+          final headerValue = value.toString().trim();
+          if (headerValue.isEmpty) return;
+          normalizedHeaders[headerKey] = headerValue;
+        });
+        currentPlayHttpHeaders = normalizedHeaders;
+
+        final ua = normalizedHeaders['user-agent'];
+        if (ua != null && ua.trim().isNotEmpty) {
+          currentPlugin.userAgent = ua.trim();
         }
-        final referer = header['Referer'] ?? header['referer'];
-        if (referer != null && referer.toString().trim().isNotEmpty) {
-          currentPlugin.referer = referer.toString();
+        final referer = normalizedHeaders['referer'];
+        if (referer != null && referer.trim().isNotEmpty) {
+          currentPlugin.referer = referer.trim();
         }
       }
       final webviewItemController = Modular.get<WebviewItemController>();

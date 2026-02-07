@@ -319,16 +319,23 @@ abstract class _PlayerController with Store {
     bool forceAdBlocker =
         setting.get(SettingBoxKey.forceAdBlocker, defaultValue: false);
     bool adBlockerEnabled = forceAdBlocker || videoPageController.currentPlugin.adBlocker;
-    if (videoPageController.currentPlugin.userAgent == '') {
-      userAgent = Utils.getRandomUA();
+    Map<String, String> httpHeaders = {};
+    if (videoPageController.currentPlugin.isNodeSource) {
+      httpHeaders = Map<String, String>.from(
+        videoPageController.currentPlayHttpHeaders,
+      );
     } else {
-      userAgent = videoPageController.currentPlugin.userAgent;
+      if (videoPageController.currentPlugin.userAgent == '') {
+        userAgent = Utils.getRandomUA();
+      } else {
+        userAgent = videoPageController.currentPlugin.userAgent;
+      }
+      String referer = videoPageController.currentPlugin.referer;
+      httpHeaders = {
+        'user-agent': userAgent,
+        if (referer.isNotEmpty) 'referer': referer,
+      };
     }
-    String referer = videoPageController.currentPlugin.referer;
-    var httpHeaders = {
-      'user-agent': userAgent,
-      if (referer.isNotEmpty) 'referer': referer,
-    };
 
     mediaPlayer = Player(
       configuration: PlayerConfiguration(
@@ -401,8 +408,12 @@ abstract class _PlayerController with Store {
         setting.get(SettingBoxKey.showPlayerError, defaultValue: true);
     mediaPlayer!.stream.error.listen((event) {
       if (showPlayerError) {
+        final errText = event.toString();
+        final message = videoUrl.isNotEmpty && errText.contains(videoUrl)
+            ? '播放器内部错误 $errText'
+            : '播放器内部错误 $errText $videoUrl';
         KazumiDialog.showToast(
-            message: '播放器内部错误 ${event.toString()} $videoUrl',
+            message: message,
             duration: const Duration(seconds: 5),
             showActionButton: true);
       }
