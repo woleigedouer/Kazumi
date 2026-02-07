@@ -6,6 +6,8 @@ import 'package:flutter/services.dart' show rootBundle, AssetManifest;
 import 'package:path_provider/path_provider.dart';
 import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/plugins/plugin_validity_tracker.dart';
+import 'package:kazumi/plugins/node_dist_manager.dart';
+import 'package:kazumi/plugins/node_runtime_manager.dart';
 import 'package:kazumi/plugins/plugin_install_time_tracker.dart';
 import 'package:kazumi/request/plugin.dart';
 import 'package:kazumi/request/request.dart';
@@ -54,6 +56,20 @@ abstract class _PluginsController with Store {
       await newPluginDirectory!.create(recursive: true);
     }
     await loadAllPlugins();
+    if (Platform.isWindows) {
+      final subscribeUrl = GStorage.setting
+          .get(SettingBoxKey.nodeSubscribeUrl, defaultValue: '')
+          .toString()
+          .trim();
+      if (subscribeUrl.isNotEmpty) {
+        try {
+          await NodeDistManager.instance.syncFromSubscribeUrl(subscribeUrl);
+        } catch (e) {
+          KazumiLogger().w('Plugin: sync Node dist failed: $e');
+        }
+      }
+      await NodeRuntimeManager.instance.start();
+    }
     await refreshNodePlugins();
   }
 
@@ -73,14 +89,27 @@ abstract class _PluginsController with Store {
     if (!Platform.isWindows) {
       return;
     }
-    final rawUrl = (serverUrl ??
-            GStorage.setting.get(SettingBoxKey.nodeServerUrl, defaultValue: ''))
-        .toString()
-        .trim();
-    if (rawUrl.isEmpty) {
+    // Priority: explicit param > running runtime > manual nodeServerUrl setting
+    var effectiveUrl = serverUrl?.trim() ?? '';
+    if (effectiveUrl.isEmpty) {
+      effectiveUrl = NodeRuntimeManager.instance.serverUrl;
+    }
+    if (effectiveUrl.isEmpty) {
+      final started = await NodeRuntimeManager.instance.start();
+      if (started) {
+        effectiveUrl = NodeRuntimeManager.instance.serverUrl;
+      }
+    }
+    if (effectiveUrl.isEmpty) {
+      effectiveUrl = GStorage.setting
+          .get(SettingBoxKey.nodeServerUrl, defaultValue: '')
+          .toString()
+          .trim();
+    }
+    if (effectiveUrl.isEmpty) {
       return;
     }
-    final server = _normalizeNodeServerUrl(rawUrl);
+    final server = _normalizeNodeServerUrl(effectiveUrl);
     try {
       final resp = await Request().get(
         '$server/config',

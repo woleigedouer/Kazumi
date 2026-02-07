@@ -14,6 +14,7 @@ import 'package:kazumi/bean/dialog/dialog_helper.dart';
 import 'package:kazumi/bean/settings/theme_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:kazumi/utils/constants.dart';
+import 'package:kazumi/plugins/node_runtime_manager.dart';
 
 class AppWidget extends StatefulWidget {
   const AppWidget({super.key});
@@ -64,11 +65,12 @@ class _AppWidgetState extends State<AppWidget>
   }
 
   @override
-  void onTrayMenuItemClick(MenuItem menuItem) {
+  void onTrayMenuItemClick(MenuItem menuItem) async {
     switch (menuItem.key) {
       case 'show_window':
         windowManager.show();
       case 'exit':
+        await NodeRuntimeManager.instance.stop();
         exit(0);
     }
   }
@@ -76,13 +78,14 @@ class _AppWidgetState extends State<AppWidget>
   /// 处理窗口关闭事件，
   /// 需要使用 `windowManager.close()` 来触发，`exit(0)` 会直接退出程序
   @override
-  void onWindowClose() {
+  void onWindowClose() async {
     final setting = GStorage.setting;
     final exitBehavior =
         setting.get(SettingBoxKey.exitBehavior, defaultValue: 2);
 
     switch (exitBehavior) {
       case 0:
+        await NodeRuntimeManager.instance.stop();
         exit(0);
       case 1:
         KazumiDialog.dismiss();
@@ -127,6 +130,7 @@ class _AppWidgetState extends State<AppWidget>
                     if (saveExitBehavior) {
                       await setting.put(SettingBoxKey.exitBehavior, 0);
                     }
+                    await NodeRuntimeManager.instance.stop();
                     exit(0);
                   },
                   child: const Text('退出 Kazumi')),

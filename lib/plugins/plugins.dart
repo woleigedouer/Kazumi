@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
+import 'package:kazumi/plugins/node_runtime_manager.dart';
 import 'package:kazumi/modules/search/plugin_search_module.dart';
 import 'package:kazumi/modules/roads/road_module.dart';
 import 'package:kazumi/request/request.dart';
@@ -219,11 +220,12 @@ class Plugin {
       } catch (_) {}
     });
     PluginSearchResponse pluginSearchResponse =
-    PluginSearchResponse(pluginName: name, data: searchItems);
+        PluginSearchResponse(pluginName: name, data: searchItems);
     return pluginSearchResponse;
   }
 
-  Future<List<Road>> querychapterRoads(String url, {CancelToken? cancelToken}) async {
+  Future<List<Road>> querychapterRoads(String url,
+      {CancelToken? cancelToken}) async {
     if (isNodeSource) {
       return _queryNodeRoads(url, cancelToken: cancelToken);
     }
@@ -244,8 +246,8 @@ class Plugin {
       'Connection': 'keep-alive',
     };
     try {
-      var resp =
-      await Request().get(queryURL, options: Options(headers: httpHeaders), cancelToken: cancelToken);
+      var resp = await Request().get(queryURL,
+          options: Options(headers: httpHeaders), cancelToken: cancelToken);
       var htmlString = resp.data.toString();
       var htmlElement = parse(htmlString).documentElement!;
       int count = 1;
@@ -306,8 +308,7 @@ class Plugin {
     }
     try {
       final resp = await Request().post(url,
-          data: {'wd': keyword, 'page': 1},
-          shouldRethrow: shouldRethrow);
+          data: {'wd': keyword, 'page': 1}, shouldRethrow: shouldRethrow);
       final map = _asJsonMap(resp.data);
       final list = map?['list'];
       if (list is List) {
@@ -334,8 +335,8 @@ class Plugin {
       return roadList;
     }
     try {
-      final resp = await Request().post(url,
-          data: {'id': id}, cancelToken: cancelToken);
+      final resp =
+          await Request().post(url, data: {'id': id}, cancelToken: cancelToken);
       final map = _asJsonMap(resp.data);
       final list = map?['list'];
       if (list is! List || list.isEmpty) {
@@ -370,8 +371,9 @@ class Plugin {
           if (parts.length < 2) {
             continue;
           }
-          final episodeName =
-              parts.first.trim().isEmpty ? '第$episodeIndex集' : parts.first.trim();
+          final episodeName = parts.first.trim().isEmpty
+              ? '第$episodeIndex集'
+              : parts.first.trim();
           final episodeId = parts.sublist(1).join(r'$').trim();
           if (episodeId.isEmpty) {
             continue;
@@ -398,6 +400,9 @@ class Plugin {
       return '';
     }
     var server = nodeServer.trim();
+    if (server.isEmpty) {
+      server = NodeRuntimeManager.instance.serverUrl.trim();
+    }
     if (server.isEmpty) {
       return '';
     }
@@ -445,7 +450,7 @@ class Plugin {
   }
 
   Future<String> testSearchRequest(String keyword,
-      {bool shouldRethrow = false,CancelToken? cancelToken}) async {
+      {bool shouldRethrow = false, CancelToken? cancelToken}) async {
     String queryURL = searchURL.replaceAll('@keyword', keyword);
     dynamic resp;
     if (usePost) {
@@ -475,7 +480,9 @@ class Plugin {
         'Connection': 'keep-alive',
       };
       resp = await Request().get(queryURL,
-          options: Options(headers: httpHeaders,),
+          options: Options(
+            headers: httpHeaders,
+          ),
           shouldRethrow: shouldRethrow,
           extra: {'customError': ''},
           cancelToken: cancelToken);
@@ -499,7 +506,7 @@ class Plugin {
       } catch (_) {}
     });
     PluginSearchResponse pluginSearchResponse =
-    PluginSearchResponse(pluginName: name, data: searchItems);
+        PluginSearchResponse(pluginName: name, data: searchItems);
     return pluginSearchResponse;
   }
 }
@@ -551,10 +558,19 @@ class NodePlayInfo {
     final parse = parseRaw is int
         ? parseRaw
         : int.tryParse(parseRaw?.toString() ?? '') ?? 0;
-    final header = map['header'] is Map
-        ? Map<String, dynamic>.from(map['header'] as Map)
+    final headerRaw = map['header'] ?? map['headers'];
+    final header = headerRaw is Map
+        ? Map<String, dynamic>.from(headerRaw as Map)
         : <String, dynamic>{};
-    return NodePlayInfo(parse: parse, url: map['url'], header: header);
+
+    dynamic url = map['url'];
+    if (url is String && url.trim().isEmpty) {
+      url = null;
+    } else if (url is List && url.isEmpty) {
+      url = null;
+    }
+    url ??= map['urls'];
+    return NodePlayInfo(parse: parse, url: url, header: header);
   }
 
   String? resolveUrl() {
@@ -562,16 +578,23 @@ class NodePlayInfo {
       return null;
     }
     if (url is String) {
-      return url as String;
+      final direct = (url as String).trim();
+      return direct.isEmpty ? null : direct;
     }
     if (url is List) {
       final list = url as List;
       if (list.length >= 2 && list[1] is String) {
-        return list[1] as String;
+        final candidate = (list[1] as String).trim();
+        if (candidate.isNotEmpty) {
+          return candidate;
+        }
       }
       for (final item in list) {
         if (item is String) {
-          return item;
+          final candidate = item.trim();
+          if (candidate.isNotEmpty) {
+            return candidate;
+          }
         }
       }
     }

@@ -272,5 +272,6 @@ class SettingBoxKey {
       proxyConfigured = 'proxyConfigured',
       proxyUrl = 'proxyUrl',
       showRating = 'showRating',
+      nodeSubscribeUrl = 'nodeSubscribeUrl',
       nodeServerUrl = 'nodeServerUrl';
 }

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_mobx/flutter_mobx.dart';
@@ -10,6 +11,8 @@ import 'package:kazumi/plugins/plugins.dart';
 import 'package:kazumi/plugins/plugins_controller.dart';
 import 'package:kazumi/bean/appbar/sys_app_bar.dart';
 import 'package:kazumi/utils/storage.dart';
+import 'package:kazumi/plugins/node_dist_manager.dart';
+import 'package:kazumi/plugins/node_runtime_manager.dart';
 
 class PluginViewPage extends StatefulWidget {
   const PluginViewPage({super.key});
@@ -127,53 +130,147 @@ class _PluginViewPageState extends State<PluginViewPage> {
       KazumiDialog.showToast(message: '当前平台暂不支持外置 Node 源');
       return;
     }
+
+    final runtimeManager = NodeRuntimeManager.instance;
+    final distManager = NodeDistManager.instance;
     final TextEditingController textController = TextEditingController(
-      text: setting.get(SettingBoxKey.nodeServerUrl,
-          defaultValue: 'http://127.0.0.1:2333'),
+      text: setting.get(SettingBoxKey.nodeSubscribeUrl, defaultValue: ''),
     );
+
     KazumiDialog.show(builder: (context) {
-      return AlertDialog(
-        title: const Text('Node 源设置'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text('外部 Node 服务地址（示例：http://127.0.0.1:2333）'),
-            const SizedBox(height: 12),
-            TextField(
-              controller: textController,
-              decoration: const InputDecoration(
-                border: OutlineInputBorder(),
-                hintText: 'http://127.0.0.1:2333',
+      bool isSyncing = false;
+      double progress = 0;
+      String statusText = '';
+
+      return StatefulBuilder(
+        builder: (BuildContext context, StateSetter setState) {
+          if (statusText.isEmpty) {
+            distManager.hasRequiredDistFiles().then((hasDist) {
+              if (!context.mounted) return;
+              setState(() {
+                if (hasDist) {
+                  statusText = runtimeManager.isRunning
+                      ? 'dist 已下载，Node 运行中（${runtimeManager.serverUrl}）'
+                      : 'dist 已下载，Node 未运行';
+                } else {
+                  statusText = 'dist 未下载';
+                }
+              });
+            });
+            statusText = '检查中...';
+          }
+
+          return AlertDialog(
+            title: const Text('Node 源订阅'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('输入订阅地址（可填目录或 index.js.md5，如 https://example.com/dist/ 或 https://example.com/index.js.md5）'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: textController,
+                  enabled: !isSyncing,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                     hintText: 'https://user:pass@example.com/dist/ 或 https://user:pass@example.com/index.js.md5',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text('状态：$statusText'),
+                if (isSyncing) ...[
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(
+                      value: progress <= 0 ? null : progress),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: isSyncing ? null : () => KazumiDialog.dismiss(),
+                child: Text(
+                  '取消',
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.outline),
+                ),
               ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => KazumiDialog.dismiss(),
-            child: Text(
-              '取消',
-              style: TextStyle(color: Theme.of(context).colorScheme.outline),
-            ),
-          ),
-          TextButton(
-            onPressed: () async {
-              final value = textController.text.trim();
-              await setting.put(SettingBoxKey.nodeServerUrl, value);
-              await pluginsController.refreshNodePlugins(serverUrl: value);
-              KazumiDialog.dismiss();
-              if (value.isEmpty) {
-                KazumiDialog.showToast(message: '已清空 Node 源地址');
-              } else {
-                KazumiDialog.showToast(message: 'Node 源已刷新，重新打开详情页生效');
-              }
-            },
-            child: const Text('保存并刷新'),
-          ),
-        ],
+              TextButton(
+                onPressed: isSyncing
+                    ? null
+                    : () async {
+                        final value = textController.text.trim();
+                        if (value.isEmpty) {
+                          KazumiDialog.showToast(message: '请输入订阅地址');
+                          return;
+                        }
+                        await setting.put(
+                            SettingBoxKey.nodeSubscribeUrl, value);
+                        setState(() {
+                          isSyncing = true;
+                          progress = 0;
+                          statusText = '正在同步 dist...';
+                        });
+                        try {
+                          await distManager.syncFromSubscribeUrl(
+                            value,
+                            onProgress: (p) {
+                              if (!context.mounted) return;
+                              setState(() {
+                                progress = p;
+                              });
+                            },
+                          );
+                          if (!context.mounted) return;
+                          final started =
+                              await runtimeManager.start(forceRestart: true);
+                          await pluginsController.refreshNodePlugins();
+                          final distReady =
+                              await distManager.hasRequiredDistFiles();
+                          if (!context.mounted) return;
+                          setState(() {
+                            isSyncing = false;
+                            progress = 1;
+                            statusText = distReady
+                                ? (started
+                                    ? 'dist 已下载，Node 运行中（${runtimeManager.serverUrl}）'
+                                    : 'dist 已下载，Node 未运行')
+                                : 'dist 未下载';
+                          });
+                          KazumiDialog.showToast(
+                              message:
+                                  started ? 'Node 源已更新并启动' : 'dist 已更新，Node 启动失败');
+                        } catch (e) {
+                          if (!context.mounted) return;
+                          final errMsg = _formatSyncError(e);
+                          setState(() {
+                            isSyncing = false;
+                            statusText = '同步失败：$errMsg';
+                          });
+                          KazumiDialog.showToast(message: '同步失败：$errMsg');
+                        }
+                      },
+                child: const Text('导入/更新'),
+              ),
+            ],
+          );
+        },
       );
     });
+  }
+
+  String _formatSyncError(Object e) {
+    if (e is DioException) {
+      final statusCode = e.response?.statusCode;
+      if (statusCode != null) {
+        return 'HTTP $statusCode（请检查订阅地址是否正确）';
+      }
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout) {
+        return '连接超时，请检查网络';
+      }
+      return '网络请求失败：${e.message ?? e.type.name}';
+    }
+    return e.toString();
   }
 
   void onBackPressed(BuildContext context) {
@@ -265,7 +362,7 @@ class _PluginViewPageState extends State<PluginViewPage> {
                   onPressed: () {
                     _showNodeSourceDialog();
                   },
-                  tooltip: 'Node 源设置',
+                  tooltip: 'Node 源订阅',
                   icon: const Icon(Icons.hub_rounded),
                 ),
               IconButton(
