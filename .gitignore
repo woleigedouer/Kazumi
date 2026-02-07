@@ -54,3 +54,7 @@ android/build/reports/problems/
 **/macos/Pods/
 **/ios/Podfile.lock
 **/macos/Podfile.lock
+.ace-tool/
+
+# Node runtime binary (user must provide their own node.exe)
+node_runtime/node.exe
