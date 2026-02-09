@@ -385,7 +385,7 @@ class NodeRuntimeManager {
       return;
     }
 
-    KazumiLogger().w('NodeRuntime: terminating stale runtime pid=$stalePid');
+    KazumiLogger().i('NodeRuntime: terminating stale runtime pid=$stalePid');
     await _terminateProcessTree(stalePid);
     await Future<void>.delayed(const Duration(milliseconds: 300));
 

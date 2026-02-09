@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:dio/dio.dart';
@@ -57,20 +58,32 @@ abstract class _PluginsController with Store {
     }
     await loadAllPlugins();
     if (Platform.isWindows) {
-      final subscribeUrl = GStorage.setting
-          .get(SettingBoxKey.nodeSubscribeUrl, defaultValue: '')
-          .toString()
-          .trim();
-      if (subscribeUrl.isNotEmpty) {
-        try {
-          await NodeDistManager.instance.syncFromSubscribeUrl(subscribeUrl);
-        } catch (e) {
-          KazumiLogger().w('Plugin: sync Node dist failed: $e');
-        }
-      }
-      await NodeRuntimeManager.instance.start();
+      unawaited(_bootstrapNodeRuntimeInBackground());
+      return;
     }
     await refreshNodePlugins();
+  }
+
+  Future<void> _bootstrapNodeRuntimeInBackground() async {
+    final subscribeUrl = GStorage.setting
+        .get(SettingBoxKey.nodeSubscribeUrl, defaultValue: '')
+        .toString()
+        .trim();
+
+    if (subscribeUrl.isNotEmpty) {
+      try {
+        await NodeDistManager.instance.syncFromSubscribeUrl(subscribeUrl);
+      } catch (e) {
+        KazumiLogger().w('Plugin: sync Node dist failed: $e');
+      }
+    }
+
+    try {
+      await NodeRuntimeManager.instance.start();
+      await refreshNodePlugins();
+    } catch (e) {
+      KazumiLogger().w('Plugin: bootstrap Node runtime failed: $e');
+    }
   }
 
   List<Plugin> getSearchablePlugins() {
