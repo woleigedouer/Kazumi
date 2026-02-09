@@ -70,7 +70,7 @@ class _AppWidgetState extends State<AppWidget>
       case 'show_window':
         windowManager.show();
       case 'exit':
-        await NodeRuntimeManager.instance.stop();
+        await NodeRuntimeManager.instance.stop(waitForExit: false);
         exit(0);
     }
   }
@@ -85,7 +85,7 @@ class _AppWidgetState extends State<AppWidget>
 
     switch (exitBehavior) {
       case 0:
-        await NodeRuntimeManager.instance.stop();
+        await NodeRuntimeManager.instance.stop(waitForExit: false);
         exit(0);
       case 1:
         KazumiDialog.dismiss();
@@ -130,7 +130,7 @@ class _AppWidgetState extends State<AppWidget>
                     if (saveExitBehavior) {
                       await setting.put(SettingBoxKey.exitBehavior, 0);
                     }
-                    await NodeRuntimeManager.instance.stop();
+                    await NodeRuntimeManager.instance.stop(waitForExit: false);
                     exit(0);
                   },
                   child: const Text('退出 Kazumi')),

@@ -203,7 +203,7 @@ class NodeRuntimeManager {
     }
   }
 
-  Future<void> stop() async {
+  Future<void> stop({bool waitForExit = true}) async {
     if (_state == NodeRuntimeState.stopped && _process == null) {
       _serverUrl = '';
       _port = null;
@@ -217,14 +217,20 @@ class NodeRuntimeManager {
     final process = _process;
     if (process != null) {
       _manualStopPids.add(process.pid);
-      await _terminateProcessTree(process.pid);
-      try {
-        await process.exitCode.timeout(_stopTimeout);
-      } catch (_) {
+      if (!waitForExit) {
+        // Fast path for app exit: best-effort kill and return quickly.
+        // Any remaining stale process will be cleaned on next start.
         await _terminateProcessTree(process.pid, force: true);
+      } else {
+        await _terminateProcessTree(process.pid);
         try {
           await process.exitCode.timeout(_stopTimeout);
-        } catch (_) {}
+        } catch (_) {
+          await _terminateProcessTree(process.pid, force: true);
+          try {
+            await process.exitCode.timeout(_stopTimeout);
+          } catch (_) {}
+        }
       }
     }
 
