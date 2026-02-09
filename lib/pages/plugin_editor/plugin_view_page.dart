@@ -211,7 +211,7 @@ class _PluginViewPageState extends State<PluginViewPage> {
                           statusText = '正在同步 dist...';
                         });
                         try {
-                          await distManager.syncFromSubscribeUrl(
+                          final updated = await distManager.syncFromSubscribeUrl(
                             value,
                             onProgress: (p) {
                               if (!context.mounted) return;
@@ -221,8 +221,10 @@ class _PluginViewPageState extends State<PluginViewPage> {
                             },
                           );
                           if (!context.mounted) return;
-                          final started =
-                              await runtimeManager.start(forceRestart: true);
+
+                          final started = updated
+                              ? await runtimeManager.start(forceRestart: true)
+                              : await runtimeManager.start();
                           await pluginsController.refreshNodePlugins();
                           final distReady =
                               await distManager.hasRequiredDistFiles();

@@ -18,6 +18,7 @@ class NodeRuntimeManager {
   static final NodeRuntimeManager instance = NodeRuntimeManager._();
 
   static const int _maxRestarts = 3;
+  static const Duration _stopTimeout = Duration(seconds: 2);
   static const Duration _stderrWindow = Duration(seconds: 1);
   static const int _maxStderrLinesPerWindow = 12;
   static const int _maxStderrLineLength = 240;
@@ -27,6 +28,7 @@ class NodeRuntimeManager {
     'KAZUMI_NODE_RUNTIME_VERBOSE_LOGS',
     defaultValue: false,
   );
+  static const String _managedPidFileName = 'runtime.pid';
   static final RegExp _listenRegex =
       RegExp(r'Server listening on http://[\d.]+:(\d+)');
   static final RegExp _noisyStdoutRegex = RegExp(
@@ -74,6 +76,7 @@ class NodeRuntimeManager {
   int _restartCount = 0;
   int? _port;
   String _serverUrl = '';
+  final Set<int> _manualStopPids = <int>{};
   DateTime? _stderrWindowStart;
   int _stderrWindowLogged = 0;
   int _stderrWindowSuppressed = 0;
@@ -149,6 +152,8 @@ class NodeRuntimeManager {
     _port = null;
     _serverUrl = '';
 
+    await _cleanupStaleRuntimeProcess(bootstrapPath: bootstrap.path);
+
     try {
       final process = await Process.start(
         nodeExe.path,
@@ -160,6 +165,7 @@ class NodeRuntimeManager {
         },
       );
       _process = process;
+      await _persistManagedPid(process.pid);
       _resetStderrWindow();
       _resetStdoutWindow();
 
@@ -198,9 +204,10 @@ class NodeRuntimeManager {
   }
 
   Future<void> stop() async {
-    if (_state == NodeRuntimeState.stopped) {
+    if (_state == NodeRuntimeState.stopped && _process == null) {
       _serverUrl = '';
       _port = null;
+      await _clearManagedPid();
       return;
     }
     _manualStopping = true;
@@ -209,15 +216,20 @@ class NodeRuntimeManager {
 
     final process = _process;
     if (process != null) {
-      process.kill();
+      _manualStopPids.add(process.pid);
+      await _terminateProcessTree(process.pid);
       try {
-        await process.exitCode.timeout(const Duration(seconds: 2));
+        await process.exitCode.timeout(_stopTimeout);
       } catch (_) {
-        process.kill(ProcessSignal.sigkill);
+        await _terminateProcessTree(process.pid, force: true);
+        try {
+          await process.exitCode.timeout(_stopTimeout);
+        } catch (_) {}
       }
     }
 
     _process = null;
+    await _clearManagedPid();
     _flushSuppressedStderr();
     _resetStderrWindow();
     _flushSuppressedStdout();
@@ -297,15 +309,35 @@ class NodeRuntimeManager {
 
   Future<void> _watchExit(Process process) async {
     final code = await process.exitCode;
-    if (identical(_process, process)) {
+
+    // If this process was manually stopped, never restart.
+    if (_manualStopPids.remove(process.pid)) {
+      KazumiLogger().i(
+        'NodeRuntime: process exited with code $code (manual stop)',
+      );
+      await _clearManagedPidIfMatches(process.pid);
+      _flushSuppressedStderr();
+      _resetStderrWindow();
+      _flushSuppressedStdout();
+      _resetStdoutWindow();
+      return;
+    }
+
+    final isCurrent = identical(_process, process);
+    if (isCurrent) {
       _process = null;
       _state = NodeRuntimeState.stopped;
     }
+    await _clearManagedPidIfMatches(process.pid);
     _flushSuppressedStderr();
     _resetStderrWindow();
     _flushSuppressedStdout();
     _resetStdoutWindow();
     KazumiLogger().w('NodeRuntime: process exited with code $code');
+
+    // If this is not the currently managed process, do not restart.
+    // This prevents stale exit events from triggering extra restarts.
+    if (!isCurrent) return;
 
     if (_manualStopping || !_autoRestartEnabled || !Platform.isWindows) return;
 
@@ -319,6 +351,157 @@ class NodeRuntimeManager {
     KazumiLogger().w('NodeRuntime: restarting in ${delay.inSeconds}s');
     await Future<void>.delayed(delay);
     await start(forceRestart: true);
+  }
+
+  Future<void> _cleanupStaleRuntimeProcess({
+    required String bootstrapPath,
+  }) async {
+    final stalePid = await _readManagedPid();
+    if (stalePid == null) {
+      return;
+    }
+
+    if (_process != null && _process!.pid == stalePid) {
+      return;
+    }
+
+    final commandLine = await _queryCommandLineByPid(stalePid);
+    if (commandLine.isEmpty) {
+      await _clearManagedPid();
+      return;
+    }
+
+    if (!_isKazumiRuntimeCommand(commandLine, bootstrapPath)) {
+      KazumiLogger().w(
+        'NodeRuntime: skip stale pid $stalePid due to command mismatch',
+      );
+      await _clearManagedPid();
+      return;
+    }
+
+    KazumiLogger().w('NodeRuntime: terminating stale runtime pid=$stalePid');
+    await _terminateProcessTree(stalePid);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
+    final stillRunning = await _queryCommandLineByPid(stalePid);
+    if (stillRunning.isNotEmpty) {
+      await _terminateProcessTree(stalePid, force: true);
+    }
+
+    await _clearManagedPid();
+  }
+
+  Future<void> _terminateProcessTree(int pid, {bool force = false}) async {
+    final args = <String>['/PID', '$pid', '/T'];
+    if (force) {
+      args.add('/F');
+    }
+
+    try {
+      final result = await Process.run('taskkill', args);
+      if (result.exitCode != 0) {
+        if (result.exitCode == 128) {
+          return;
+        }
+        final stdout = result.stdout.toString();
+        final stderr = result.stderr.toString();
+        final output = '$stdout\n$stderr'.toLowerCase();
+        if (!output.contains('not found') &&
+            !output.contains('no instance') &&
+            !output.contains('cannot find') &&
+            !output.contains('could not find') &&
+            !output.contains('没有运行的实例') &&
+            !output.contains('没有找到') &&
+            !output.contains('找不到') &&
+            !output.contains('无法找到')) {
+          KazumiLogger().w(
+            'NodeRuntime: taskkill failed (pid=$pid, force=$force, code=${result.exitCode})',
+          );
+        }
+      }
+    } catch (e) {
+      KazumiLogger().w(
+        'NodeRuntime: taskkill exception (pid=$pid, force=$force): $e',
+      );
+    }
+  }
+
+  Future<String> _queryCommandLineByPid(int pid) async {
+    try {
+      final script =
+          '\$p = Get-CimInstance Win32_Process -Filter "ProcessId = $pid" -ErrorAction SilentlyContinue; '
+          'if (\$null -ne \$p) { \$p.CommandLine }';
+      final result = await Process.run('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        script,
+      ]);
+      if (result.exitCode != 0) {
+        return '';
+      }
+      return result.stdout.toString().trim();
+    } catch (_) {
+      return '';
+    }
+  }
+
+  bool _isKazumiRuntimeCommand(String commandLine, String bootstrapPath) {
+    if (commandLine.isEmpty) {
+      return false;
+    }
+
+    final normalizedCommand = commandLine.toLowerCase().replaceAll('\\', '/');
+    final normalizedBootstrap =
+        bootstrapPath.toLowerCase().replaceAll('\\', '/');
+    return normalizedCommand.contains(normalizedBootstrap);
+  }
+
+  Future<File> _pidFile() async {
+    final supportDir = await getApplicationSupportDirectory();
+    final runtimeDir = Directory(p.join(supportDir.path, 'node_runtime'));
+    if (!runtimeDir.existsSync()) {
+      runtimeDir.createSync(recursive: true);
+    }
+    return File(p.join(runtimeDir.path, _managedPidFileName));
+  }
+
+  Future<void> _persistManagedPid(int pid) async {
+    try {
+      final file = await _pidFile();
+      await file.writeAsString('$pid', flush: true);
+    } catch (e) {
+      KazumiLogger().w('NodeRuntime: failed to persist pid: $e');
+    }
+  }
+
+  Future<int?> _readManagedPid() async {
+    try {
+      final file = await _pidFile();
+      if (!file.existsSync()) {
+        return null;
+      }
+      final text = (await file.readAsString()).trim();
+      return int.tryParse(text);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _clearManagedPid() async {
+    try {
+      final file = await _pidFile();
+      if (file.existsSync()) {
+        await file.delete();
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _clearManagedPidIfMatches(int pid) async {
+    final currentPid = await _readManagedPid();
+    if (currentPid == pid) {
+      await _clearManagedPid();
+    }
   }
 
   void _onStderrLine(String rawLine) {
