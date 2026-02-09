@@ -62,6 +62,9 @@ abstract class _PlayerController with Store {
   bool danmakuOn = false;
   @observable
   bool danmakuLoading = false;
+  int _nodeDanmakuRequestSerial = 0;
+  CancelToken? _nodeDanmakuCancelToken;
+  String _activeNodeDanmakuSignature = '';
   DanmakuDestination danmakuDestination = DanmakuDestination.remoteDanmaku;
   final StreamController<SyncPlayChatMessage> syncPlayChatStreamController =
     StreamController<SyncPlayChatMessage>.broadcast();
@@ -555,6 +558,8 @@ abstract class _PlayerController with Store {
   }
 
   Future<void> dispose({bool disposeSyncPlayController = true}) async {
+    _nodeDanmakuCancelToken?.cancel('player disposed');
+    _nodeDanmakuCancelToken = null;
     if (disposeSyncPlayController) {
       try {
         syncplayRoom = '';
@@ -637,29 +642,64 @@ abstract class _PlayerController with Store {
     String? xml,
     String? url,
   }) async {
-    if (danmakuLoading) {
-      KazumiLogger().i('PlayerController: danmaku is loading, ignore node request');
+    final requestSignature = _buildNodeDanmakuSignature(xml: xml, url: url);
+    if (danmakuLoading &&
+        requestSignature.isNotEmpty &&
+        requestSignature == _activeNodeDanmakuSignature) {
+      KazumiLogger().i('PlayerController: duplicate node danmaku request ignored');
       return;
     }
+
+    final requestSerial = ++_nodeDanmakuRequestSerial;
+    _nodeDanmakuCancelToken?.cancel('superseded by newer episode request');
+    final cancelToken = CancelToken();
+    _nodeDanmakuCancelToken = cancelToken;
+    _activeNodeDanmakuSignature = requestSignature;
+
     danmakuLoading = true;
+    danDanmakus.clear();
+    _clearDanmakuControllerIfReady();
+
     try {
       var xmlContent = _normalizeDanmakuXml(xml);
-      xmlContent ??= await _downloadDanmakuXml(url);
-      if (xmlContent != null) {
-        final parsedDanmakus = _parseNodeDanmakuXml(xmlContent);
-        if (parsedDanmakus.isNotEmpty) {
-          danDanmakus.clear();
-          addDanmakus(parsedDanmakus);
-          KazumiLogger().i(
-              'PlayerController: loaded node danmaku ${parsedDanmakus.length} items');
-          return;
-        }
+      xmlContent ??= await _downloadDanmakuXml(url, cancelToken: cancelToken);
+
+      if (requestSerial != _nodeDanmakuRequestSerial) {
+        return;
+      }
+
+      if (xmlContent == null) {
+        KazumiLogger().w('PlayerController: node danmaku xml missing');
+        return;
+      }
+
+      final parsedDanmakus = _parseNodeDanmakuXml(xmlContent);
+      if (requestSerial != _nodeDanmakuRequestSerial) {
+        return;
+      }
+
+      if (parsedDanmakus.isEmpty) {
         KazumiLogger().w('PlayerController: node danmaku xml parsed empty');
+        return;
+      }
+
+      addDanmakus(parsedDanmakus);
+      KazumiLogger().i(
+          'PlayerController: loaded node danmaku ${parsedDanmakus.length} items');
+    } on DioException catch (e) {
+      if (e.type != DioExceptionType.cancel) {
+        KazumiLogger().w('PlayerController: failed to load node danmaku', error: e);
       }
     } catch (e) {
       KazumiLogger().w('PlayerController: failed to load node danmaku', error: e);
     } finally {
-      danmakuLoading = false;
+      if (requestSerial == _nodeDanmakuRequestSerial) {
+        danmakuLoading = false;
+        if (identical(_nodeDanmakuCancelToken, cancelToken)) {
+          _nodeDanmakuCancelToken = null;
+          _activeNodeDanmakuSignature = '';
+        }
+      }
     }
 
     // No fallback here: node danmaku is expected to be delivered as URL/XML.
@@ -679,7 +719,10 @@ abstract class _PlayerController with Store {
     return null;
   }
 
-  Future<String?> _downloadDanmakuXml(String? url) async {
+  Future<String?> _downloadDanmakuXml(
+    String? url, {
+    required CancelToken cancelToken,
+  }) async {
     if (url == null || url.trim().isEmpty) {
       return null;
     }
@@ -691,11 +734,15 @@ abstract class _PlayerController with Store {
       return await _downloadDanmakuXmlOnce(
         target,
         receiveTimeout: const Duration(seconds: 20),
+        cancelToken: cancelToken,
       );
     } on DioException catch (e) {
       final isTimeout =
           e.type == DioExceptionType.receiveTimeout ||
               e.type == DioExceptionType.connectionTimeout;
+      if (e.type == DioExceptionType.cancel) {
+        return null;
+      }
       if (!isTimeout) {
         KazumiLogger().w('PlayerController: failed to download node danmaku xml', error: e);
         return null;
@@ -708,6 +755,7 @@ abstract class _PlayerController with Store {
         return await _downloadDanmakuXmlOnce(
           target,
           receiveTimeout: const Duration(seconds: 45),
+          cancelToken: cancelToken,
         );
       } catch (retryError) {
         KazumiLogger().w('PlayerController: failed to download node danmaku xml', error: retryError);
@@ -722,6 +770,7 @@ abstract class _PlayerController with Store {
   Future<String?> _downloadDanmakuXmlOnce(
     String target, {
     required Duration receiveTimeout,
+    required CancelToken cancelToken,
   }) async {
     final response = await Request().get(
       target,
@@ -733,6 +782,7 @@ abstract class _PlayerController with Store {
         'customError': '弹幕检索错误: 下载节点弹幕失败',
         'resType': ResponseType.plain,
       },
+      cancelToken: cancelToken,
       shouldRethrow: true,
     );
     final text = response.data?.toString();
@@ -740,6 +790,26 @@ abstract class _PlayerController with Store {
       return null;
     }
     return text;
+  }
+
+  String _buildNodeDanmakuSignature({String? xml, String? url}) {
+    final normalizedUrl = url?.trim() ?? '';
+    if (normalizedUrl.isNotEmpty) {
+      return 'url::$normalizedUrl';
+    }
+    final normalizedXml = xml?.trim() ?? '';
+    if (normalizedXml.isNotEmpty) {
+      final length = normalizedXml.length;
+      final preview = normalizedXml.substring(0, length > 64 ? 64 : length);
+      return 'xml::$length::$preview';
+    }
+    return '';
+  }
+
+  void _clearDanmakuControllerIfReady() {
+    try {
+      danmakuController.clear();
+    } catch (_) {}
   }
 
   List<Danmaku> _parseNodeDanmakuXml(String xml) {
