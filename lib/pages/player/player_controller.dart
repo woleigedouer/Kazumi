@@ -8,7 +8,10 @@ import 'package:media_kit_video/media_kit_video.dart';
 import 'package:kazumi/modules/danmaku/danmaku_module.dart';
 import 'package:mobx/mobx.dart';
 import 'package:canvas_danmaku/canvas_danmaku.dart';
+import 'package:dio/dio.dart';
+import 'package:html/parser.dart' as html_parser;
 import 'package:kazumi/request/damaku.dart';
+import 'package:kazumi/request/request.dart';
 import 'package:kazumi/pages/video/video_controller.dart';
 import 'package:flutter_modular/flutter_modular.dart';
 import 'package:hive_ce/hive.dart';
@@ -223,8 +226,18 @@ abstract class _PlayerController with Store {
     if (episodeFromTitle == 0) {
       episodeFromTitle = videoPageController.currentEpisode;
     }
-    getDanDanmakuByBgmBangumiID(
-        videoPageController.bangumiItem.id, episodeFromTitle);
+    final nodeDanmakuUrl = videoPageController.currentNodeDanmakuUrl;
+    final nodeDanmakuXml = videoPageController.currentNodeDanmakuXml;
+    if (videoPageController.currentPlugin.isNodeSource &&
+        (nodeDanmakuXml != null || nodeDanmakuUrl != null)) {
+      unawaited(loadNodeDanmaku(
+        xml: nodeDanmakuXml,
+        url: nodeDanmakuUrl,
+      ));
+    } else {
+      getDanDanmakuByBgmBangumiID(
+          videoPageController.bangumiItem.id, episodeFromTitle);
+    }
     mediaPlayer ??= await createVideoController(offset: offset);
 
     if (Utils.isDesktop()) {
@@ -618,6 +631,150 @@ abstract class _PlayerController with Store {
     } finally {
       danmakuLoading = false;
     }
+  }
+
+  Future<void> loadNodeDanmaku({
+    String? xml,
+    String? url,
+  }) async {
+    if (danmakuLoading) {
+      KazumiLogger().i('PlayerController: danmaku is loading, ignore node request');
+      return;
+    }
+    danmakuLoading = true;
+    try {
+      var xmlContent = _normalizeDanmakuXml(xml);
+      xmlContent ??= await _downloadDanmakuXml(url);
+      if (xmlContent != null) {
+        final parsedDanmakus = _parseNodeDanmakuXml(xmlContent);
+        if (parsedDanmakus.isNotEmpty) {
+          danDanmakus.clear();
+          addDanmakus(parsedDanmakus);
+          KazumiLogger().i(
+              'PlayerController: loaded node danmaku ${parsedDanmakus.length} items');
+          return;
+        }
+        KazumiLogger().w('PlayerController: node danmaku xml parsed empty');
+      }
+    } catch (e) {
+      KazumiLogger().w('PlayerController: failed to load node danmaku', error: e);
+    } finally {
+      danmakuLoading = false;
+    }
+
+    // No fallback here: node danmaku is expected to be delivered as URL/XML.
+  }
+
+  String? _normalizeDanmakuXml(String? raw) {
+    if (raw == null) {
+      return null;
+    }
+    final text = raw.trim();
+    if (text.isEmpty) {
+      return null;
+    }
+    if (text.startsWith('<')) {
+      return text;
+    }
+    return null;
+  }
+
+  Future<String?> _downloadDanmakuXml(String? url) async {
+    if (url == null || url.trim().isEmpty) {
+      return null;
+    }
+    final target = url.trim();
+    if (!target.startsWith('http://') && !target.startsWith('https://')) {
+      return null;
+    }
+    try {
+      return await _downloadDanmakuXmlOnce(
+        target,
+        receiveTimeout: const Duration(seconds: 20),
+      );
+    } on DioException catch (e) {
+      final isTimeout =
+          e.type == DioExceptionType.receiveTimeout ||
+              e.type == DioExceptionType.connectionTimeout;
+      if (!isTimeout) {
+        KazumiLogger().w('PlayerController: failed to download node danmaku xml', error: e);
+        return null;
+      }
+      KazumiLogger().w(
+        'PlayerController: node danmaku download timeout, retrying with longer timeout',
+        error: e,
+      );
+      try {
+        return await _downloadDanmakuXmlOnce(
+          target,
+          receiveTimeout: const Duration(seconds: 45),
+        );
+      } catch (retryError) {
+        KazumiLogger().w('PlayerController: failed to download node danmaku xml', error: retryError);
+        return null;
+      }
+    } catch (e) {
+      KazumiLogger().w('PlayerController: failed to download node danmaku xml', error: e);
+      return null;
+    }
+  }
+
+  Future<String?> _downloadDanmakuXmlOnce(
+    String target, {
+    required Duration receiveTimeout,
+  }) async {
+    final response = await Request().get(
+      target,
+      options: Options(
+        sendTimeout: const Duration(seconds: 8),
+        receiveTimeout: receiveTimeout,
+      ),
+      extra: {
+        'customError': '弹幕检索错误: 下载节点弹幕失败',
+        'resType': ResponseType.plain,
+      },
+      shouldRethrow: true,
+    );
+    final text = response.data?.toString();
+    if (text == null || text.trim().isEmpty) {
+      return null;
+    }
+    return text;
+  }
+
+  List<Danmaku> _parseNodeDanmakuXml(String xml) {
+    final danmakus = <Danmaku>[];
+    final document = html_parser.parse(xml);
+    final nodes = document.querySelectorAll('d');
+    for (final node in nodes) {
+      final p = node.attributes['p'];
+      if (p == null || p.isEmpty) {
+        continue;
+      }
+      final parts = p.split(',');
+      if (parts.length < 3) {
+        continue;
+      }
+      final time = double.tryParse(parts[0].trim()) ?? 0;
+      final typeRaw = int.tryParse(parts[1].trim()) ?? 1;
+      final type = (typeRaw == 4 || typeRaw == 5) ? typeRaw : 1;
+      final colorText = parts[2].trim();
+      final colorValue = int.tryParse(colorText) ??
+          int.tryParse(colorText.replaceFirst('0x', ''), radix: 16) ??
+          16777215;
+      final message = node.text.trim();
+      if (message.isEmpty) {
+        continue;
+      }
+      danmakus.add(Danmaku(
+        message: message,
+        time: time,
+        type: type,
+        color: Utils.generateDanmakuColor(colorValue),
+        source: '[Node]',
+      ));
+    }
+    return danmakus;
   }
 
   void addDanmakus(List<Danmaku> danmakus) {

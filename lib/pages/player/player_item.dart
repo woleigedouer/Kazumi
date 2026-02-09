@@ -640,7 +640,9 @@ class _PlayerItemState extends State<PlayerItem>
           if (!_danmakuGamerSource && danmaku.source.contains('Gamer')) {
             return;
           }
+          final isNodeDanmaku = danmaku.source.contains('Node');
           if (!_danmakuDanDanSource &&
+              !isNodeDanmaku &&
               !(danmaku.source.contains('BiliBili') ||
                   danmaku.source.contains('Gamer'))) {
             return;

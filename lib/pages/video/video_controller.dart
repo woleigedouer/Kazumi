@@ -65,6 +65,8 @@ abstract class _VideoPageController with Store {
   late Plugin currentPlugin;
 
   Map<String, String> currentPlayHttpHeaders = {};
+  String? currentNodeDanmakuUrl;
+  String? currentNodeDanmakuXml;
   /// 用于取消正在进行的 queryRoads 操作
   CancelToken? _queryRoadsCancelToken;
 
@@ -79,6 +81,8 @@ abstract class _VideoPageController with Store {
     KazumiLogger().i('VideoPageController: changed to $chapterName');
     String urlItem = roadList[currentRoad].data[episode - 1];
     currentPlayHttpHeaders = {};
+    currentNodeDanmakuUrl = null;
+    currentNodeDanmakuXml = null;
     if (currentPlugin.isNodeSource) {
       final payload = NodeEpisodePayload.decode(urlItem);
       if (payload == null) {
@@ -121,6 +125,15 @@ abstract class _VideoPageController with Store {
         if (referer != null && referer.trim().isNotEmpty) {
           currentPlugin.referer = referer.trim();
         }
+      }
+      currentNodeDanmakuUrl = playInfo.resolveDanmakuUrl();
+      currentNodeDanmakuXml = playInfo.resolveDanmakuXml();
+      if (currentNodeDanmakuUrl != null) {
+        KazumiLogger().i(
+            'VideoPageController: using node danmaku url $currentNodeDanmakuUrl');
+      }
+      if (currentNodeDanmakuXml != null) {
+        KazumiLogger().i('VideoPageController: using node danmaku xml payload');
       }
       final webviewItemController = Modular.get<WebviewItemController>();
       if (playInfo.parse == 0) {

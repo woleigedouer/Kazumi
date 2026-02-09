@@ -546,11 +546,13 @@ class NodePlayInfo {
   final int parse;
   final dynamic url;
   final Map<String, dynamic> header;
+  final dynamic danmaku;
 
   NodePlayInfo({
     required this.parse,
     required this.url,
     required this.header,
+    required this.danmaku,
   });
 
   factory NodePlayInfo.fromMap(Map<String, dynamic> map) {
@@ -559,9 +561,8 @@ class NodePlayInfo {
         ? parseRaw
         : int.tryParse(parseRaw?.toString() ?? '') ?? 0;
     final headerRaw = map['header'] ?? map['headers'];
-    final header = headerRaw is Map
-        ? Map<String, dynamic>.from(headerRaw as Map)
-        : <String, dynamic>{};
+    final header =
+        headerRaw is Map ? Map<String, dynamic>.from(headerRaw) : <String, dynamic>{};
 
     dynamic url = map['url'];
     if (url is String && url.trim().isEmpty) {
@@ -570,7 +571,15 @@ class NodePlayInfo {
       url = null;
     }
     url ??= map['urls'];
-    return NodePlayInfo(parse: parse, url: url, header: header);
+    dynamic danmaku = map['danmaku'];
+    danmaku ??= map['danmu'];
+    final extraRaw = map['extra'];
+    if (extraRaw is Map) {
+      final extra = Map<String, dynamic>.from(extraRaw);
+      danmaku ??= extra['danmaku'];
+      danmaku ??= extra['danmu'];
+    }
+    return NodePlayInfo(parse: parse, url: url, header: header, danmaku: danmaku);
   }
 
   String? resolveUrl() {
@@ -599,5 +608,110 @@ class NodePlayInfo {
       }
     }
     return null;
+  }
+
+  String? resolveDanmakuUrl() {
+    final candidate = _unwrapDanmakuValue(danmaku);
+    if (candidate is Map) {
+      final map = Map<String, dynamic>.from(candidate);
+      const keys = [
+        'url',
+        'xmlUrl',
+        'xml_url',
+        'danmakuUrl',
+        'danmaku_url',
+        'link',
+        'uri',
+      ];
+      for (final key in keys) {
+        final value = _toNonEmptyString(map[key]);
+        if (value != null && _looksLikeHttpUrl(value)) {
+          return value;
+        }
+      }
+    }
+    if (candidate is List) {
+      for (final item in candidate) {
+        final value = _toNonEmptyString(item);
+        if (value != null && _looksLikeHttpUrl(value)) {
+          return value;
+        }
+      }
+    }
+    final direct = _toNonEmptyString(candidate);
+    if (direct != null && _looksLikeHttpUrl(direct)) {
+      return direct;
+    }
+    return null;
+  }
+
+  String? resolveDanmakuXml() {
+    final candidate = _unwrapDanmakuValue(danmaku);
+    if (candidate is Map) {
+      final map = Map<String, dynamic>.from(candidate);
+      const keys = [
+        'xml',
+        'content',
+        'data',
+        'text',
+        'body',
+      ];
+      for (final key in keys) {
+        final value = _toNonEmptyString(map[key]);
+        if (value != null && _looksLikeDanmakuXml(value)) {
+          return value;
+        }
+      }
+    }
+    if (candidate is List) {
+      for (final item in candidate) {
+        final value = _toNonEmptyString(item);
+        if (value != null && _looksLikeDanmakuXml(value)) {
+          return value;
+        }
+      }
+    }
+    final direct = _toNonEmptyString(candidate);
+    if (direct != null && _looksLikeDanmakuXml(direct)) {
+      return direct;
+    }
+    return null;
+  }
+
+  dynamic _unwrapDanmakuValue(dynamic raw) {
+    if (raw is Map) {
+      final map = Map<String, dynamic>.from(raw);
+      final inner = map['danmaku'] ?? map['danmu'];
+      if (inner != null) {
+        return inner;
+      }
+    }
+    return raw;
+  }
+
+  String? _toNonEmptyString(dynamic value) {
+    if (value == null) {
+      return null;
+    }
+    final text = value.toString().trim();
+    if (text.isEmpty) {
+      return null;
+    }
+    return text;
+  }
+
+  bool _looksLikeHttpUrl(String value) {
+    return value.startsWith('http://') || value.startsWith('https://');
+  }
+
+  bool _looksLikeDanmakuXml(String value) {
+    final text = value.trimLeft();
+    if (!text.startsWith('<')) {
+      return false;
+    }
+    return text.contains('<d ') ||
+        text.contains('<d>') ||
+        text.contains('<i>') ||
+        text.contains('<?xml');
   }
 }
