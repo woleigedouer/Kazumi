@@ -36,6 +36,15 @@ class _BangumiHistoryCardVState extends State<BangumiHistoryCardV> {
   final PluginsController pluginsController = Modular.get<PluginsController>();
   final HistoryController historyController = Modular.get<HistoryController>();
 
+  Plugin? _findPluginByName(String name) {
+    for (final plugin in pluginsController.getSearchablePlugins()) {
+      if (plugin.name == name) {
+        return plugin;
+      }
+    }
+    return null;
+  }
+
   Widget propertyChip({
     required String title,
     required String value,
@@ -101,19 +110,19 @@ class _BangumiHistoryCardVState extends State<BangumiHistoryCardV> {
               videoPageController.cancelQueryRoads();
             },
           );
-          bool flag = false;
-          for (Plugin plugin in pluginsController.pluginList) {
-            if (plugin.name == widget.historyItem.adapterName) {
-              videoPageController.currentPlugin = plugin;
-              flag = true;
-              break;
-            }
+          Plugin? matchedPlugin = _findPluginByName(widget.historyItem.adapterName);
+          if (matchedPlugin == null) {
+            try {
+              await pluginsController.refreshNodePlugins();
+            } catch (_) {}
+            matchedPlugin = _findPluginByName(widget.historyItem.adapterName);
           }
-          if (!flag) {
+          if (matchedPlugin == null) {
             KazumiDialog.dismiss();
             KazumiDialog.showToast(message: '未找到关联番剧源');
             return;
           }
+          videoPageController.currentPlugin = matchedPlugin;
           videoPageController.bangumiItem = widget.historyItem.bangumiItem;
           videoPageController.title =
               widget.historyItem.bangumiItem.nameCn == ''
